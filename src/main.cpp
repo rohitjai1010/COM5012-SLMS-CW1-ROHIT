@@ -61,7 +61,8 @@ public:
 // ---------- Member ----------
 class Member : public User {
 private:
-    vector<int> borrowedBookIds; // Encapsulated
+    vector<int> borrowedBookIds;  // Encapsulated
+    vector<int> reservedBookIds;  // Track books reserved by this member
 
 public:
     Member(int id, string name) : User(id, std::move(name)) {}
@@ -84,14 +85,36 @@ public:
         return find(borrowedBookIds.begin(), borrowedBookIds.end(), bookId) != borrowedBookIds.end();
     }
 
+    // Reservation tracking
+    void addReserved(int bookId) { reservedBookIds.push_back(bookId); }
+
+    bool removeReserved(int bookId) {
+        auto it = find(reservedBookIds.begin(), reservedBookIds.end(), bookId);
+        if (it == reservedBookIds.end()) return false;
+        reservedBookIds.erase(it);
+        return true;
+    }
+
+    bool hasReserved(int bookId) const {
+        return find(reservedBookIds.begin(), reservedBookIds.end(), bookId) != reservedBookIds.end();
+    }
+
     void showBorrowed() const {
         cout << "Borrowed (" << borrowedCount() << "/5): ";
         if (borrowedBookIds.empty()) {
             cout << "None\n";
-            return;
+        } else {
+            for (int id : borrowedBookIds) cout << id << " ";
+            cout << "\n";
         }
-        for (int id : borrowedBookIds) cout << id << " ";
-        cout << "\n";
+
+        cout << "Reserved (" << reservedBookIds.size() << "): ";
+        if (reservedBookIds.empty()) {
+            cout << "None\n";
+        } else {
+            for (int id : reservedBookIds) cout << id << " ";
+            cout << "\n";
+        }
     }
 };
 
@@ -187,9 +210,10 @@ public:
             status = BookStatus::Reserved;
             notifyMemberId = reservedByMemberId;
         } else {
-            // clear expired reservation (if any)
+            // clear expired reservation (if any) — including stale expiry timestamp
             hasReservation = false;
             reservedByMemberId = -1;
+            reservationExpiry = {};  // FIX: reset to epoch to avoid stale timestamp
         }
         return true;
     }
@@ -248,10 +272,11 @@ private:
 
 public:
     void seed() {
-        addBook("The Maze Runner", "James Dashner");
-        addBook("1984", "George Orwell");
-        addBook("Dune", "Frank Herbert");
-        addBook("The Hobbit", "J.R.R. Tolkien");
+        addBook("Harry Potter and the Philosopher's Stone", "J.K. Rowling");
+        addBook("The Alchemist", "Paulo Coelho");
+        addBook("To Kill a Mockingbird", "Harper Lee");
+        addBook("The Great Gatsby", "F. Scott Fitzgerald");
+        addBook("Atomic Habits", "James Clear");
     }
 
     void addBook(const string& title, const string& author) {
@@ -288,19 +313,14 @@ public:
     }
 
     bool borrowBook(int bookId, Member& member) {
+        // If reserved, delegate to collectBook() which also clears reservation tracking
+        if (findBook(bookId) && findBook(bookId)->getStatus() == BookStatus::Reserved) {
+            return collectBook(bookId, member);
+        }
+
         auto now = chrono::system_clock::now();
         Book* book = findBook(bookId);
         if (!book) { cout << "Book not found.\n"; return false; }
-
-        // If reserved, allow only the reserving member to collect+borrow
-        if (book->getStatus() == BookStatus::Reserved) {
-            if (!member.canBorrow()) { cout << "Borrow limit reached (max 5).\n"; return false; }
-            bool ok = book->collectReservedAndBorrow(member.getId(), now);
-            if (!ok) { cout << "This reserved book is not available for you.\n"; return false; }
-            member.addBorrowed(bookId);
-            cout << "Collected reserved book and borrowed successfully.\n";
-            return true;
-        }
 
         if (!member.canBorrow()) {
             cout << "Borrow limit reached (max 5).\n";
@@ -348,6 +368,22 @@ public:
         return true;
     }
 
+    // Overload: also clears reservation tracking when reserved member collects
+    bool collectBook(int bookId, Member& member) {
+        auto now = chrono::system_clock::now();
+        Book* book = findBook(bookId);
+        if (!book) { cout << "Book not found.\n"; return false; }
+        if (!member.canBorrow()) { cout << "Borrow limit reached (max 5).\n"; return false; }
+
+        bool ok = book->collectReservedAndBorrow(member.getId(), now);
+        if (!ok) { cout << "This reserved book is not available for you or reservation expired.\n"; return false; }
+
+        member.removeReserved(bookId);  // FIX: clear reservation record from member
+        member.addBorrowed(bookId);
+        cout << "Collected reserved book and borrowed successfully.\n";
+        return true;
+    }
+
     bool reserveBook(int bookId, Member& member) {
         auto now = chrono::system_clock::now();
         Book* book = findBook(bookId);
@@ -367,6 +403,7 @@ public:
             return false;
         }
 
+        member.addReserved(bookId);  // FIX: track reservation on the member
         cout << "Reserved successfully (expires in 3 days).\n";
         return true;
     }
@@ -501,8 +538,9 @@ int main() {
              << " (" << current->role() << ")\n";
 
         if (current->role() == "Member") {
-            Member* mm = (choice == 1) ? &m1 : &m2;
-            memberMenu(lib, *mm);
+            // FIX: safe cast — use dynamic_cast instead of fragile ternary
+            Member* mm = dynamic_cast<Member*>(current);
+            if (mm) memberMenu(lib, *mm);
         } else {
             librarianMenu(lib, l1);
         }
