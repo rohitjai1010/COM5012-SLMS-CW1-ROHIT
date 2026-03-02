@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
+#include <cctype>
 
 using namespace std;
 
@@ -158,7 +159,7 @@ public:
     bool isReserved() const { return status == BookStatus::Reserved; }
 
     bool canRemove() const {
-        return status != BookStatus::Borrowed; // don't remove borrowed books
+        return status == BookStatus::Available; // only remove available books
     }
 
     bool reservationValid(const chrono::system_clock::time_point& now) const {
@@ -313,14 +314,17 @@ public:
     }
 
     bool borrowBook(int bookId, Member& member) {
-        // If reserved, delegate to collectBook() which also clears reservation tracking
-        if (findBook(bookId) && findBook(bookId)->getStatus() == BookStatus::Reserved) {
-            return collectBook(bookId, member);
+        Book* book = findBook(bookId);
+        if (!book) { cout << "Book not found.\n"; return false; }
+
+        // If reserved, delegate to collectBook()
+        if (book->getStatus() == BookStatus::Reserved) {
+            if (collectBook(bookId, member)) return true;
+            // If collection failed (e.g. expired), the book might now be Available.
+            // We fall through to try a normal borrow if possible.
         }
 
         auto now = chrono::system_clock::now();
-        Book* book = findBook(bookId);
-        if (!book) { cout << "Book not found.\n"; return false; }
 
         if (!member.canBorrow()) {
             cout << "Borrow limit reached (max 5).\n";
@@ -372,13 +376,26 @@ public:
     bool collectBook(int bookId, Member& member) {
         auto now = chrono::system_clock::now();
         Book* book = findBook(bookId);
-        if (!book) { cout << "Book not found.\n"; return false; }
+        if (!book) { 
+            member.removeReserved(bookId); // Clean up if book no longer exists
+            cout << "Book not found.\n"; 
+            return false; 
+        }
         if (!member.canBorrow()) { cout << "Borrow limit reached (max 5).\n"; return false; }
 
         bool ok = book->collectReservedAndBorrow(member.getId(), now);
-        if (!ok) { cout << "This reserved book is not available for you or reservation expired.\n"; return false; }
+        if (!ok) { 
+            // Clean up reservation tracking if it was ours but expired/invalid
+            if (member.hasReserved(bookId)) {
+                member.removeReserved(bookId);
+                cout << "Reservation record cleared (expired or invalid).\n";
+            } else {
+                cout << "This reserved book is not available for you.\n";
+            }
+            return false; 
+        }
 
-        member.removeReserved(bookId);  // FIX: clear reservation record from member
+        member.removeReserved(bookId);
         member.addBorrowed(bookId);
         cout << "Collected reserved book and borrowed successfully.\n";
         return true;
